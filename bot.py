@@ -329,12 +329,17 @@ def home():
             <p class="text-[11px] text-slate-500 mt-3">WhatsApp ➔ Dispositivos vinculados ➔ Vincular dispositivo</p>
         </div>
 
-        <div class="flex gap-2">
-            <button onclick="location.reload()" class="flex-1 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold py-2.5 px-4 rounded-xl text-xs transition cursor-pointer">
-                🔄 Recargar Código QR
-            </button>
-            <a href="/start-session" class="bg-slate-800 hover:bg-slate-700 text-white font-semibold py-2.5 px-4 rounded-xl text-xs transition">
-                ⚡ Forzar Inicio
+        <div class="flex flex-col gap-2">
+            <div class="flex gap-2">
+                <button onclick="location.reload()" class="flex-1 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold py-2.5 px-4 rounded-xl text-xs transition cursor-pointer">
+                    🔄 Recargar Página
+                </button>
+                <a href="/start-session" class="flex-1 bg-amber-600 hover:bg-amber-700 text-white font-semibold py-2.5 px-4 rounded-xl text-xs transition">
+                    ⚡ Reiniciar Sesión
+                </a>
+            </div>
+            <a href="/reset-session" class="bg-rose-900/60 hover:bg-rose-800 text-rose-200 border border-rose-700 font-semibold py-2 px-4 rounded-xl text-xs transition">
+                🗑️ Limpiar y Forzar Nuevo QR (Desvincular)
             </a>
         </div>
         
@@ -440,18 +445,78 @@ def debug():
 
     return jsonify(info)
 
+@app.route("/restart-session")
 @app.route("/start-session")
 def start_session():
-    """Endpoint para forzar inicio de sesión en WAHA"""
+    """Endpoint para forzar reinicio/inicio limpio de sesión en WAHA"""
+    try:
+        requests.post(
+            f"{WAHA_URL}/api/sessions/stop",
+            headers={"X-Api-Key": WAHA_API_KEY, "Content-Type": "application/json"},
+            json={"name": WAHA_SESSION},
+            timeout=8
+        )
+    except Exception:
+        pass
+
+    try:
+        requests.post(
+            f"{WAHA_URL}/api/sessions/{WAHA_SESSION}/stop",
+            headers={"X-Api-Key": WAHA_API_KEY},
+            timeout=8
+        )
+    except Exception:
+        pass
+
+    time.sleep(1.5)
+
     try:
         requests.post(
             f"{WAHA_URL}/api/sessions/start",
             headers={"X-Api-Key": WAHA_API_KEY, "Content-Type": "application/json"},
             json={"name": WAHA_SESSION},
-            timeout=10
+            timeout=12
         )
     except Exception as e:
-        log.warning("Error iniciando sesión: %s", e)
+        log.warning("Error iniciando sesión WAHA: %s", e)
+
+    from flask import redirect
+    return redirect("/")
+
+@app.route("/reset-session")
+def reset_session():
+    """Endpoint para desvincular y forzar generación de nuevo QR"""
+    try:
+        requests.post(
+            f"{WAHA_URL}/api/sessions/logout",
+            headers={"X-Api-Key": WAHA_API_KEY, "Content-Type": "application/json"},
+            json={"name": WAHA_SESSION},
+            timeout=8
+        )
+    except Exception:
+        pass
+
+    try:
+        requests.delete(
+            f"{WAHA_URL}/api/sessions/{WAHA_SESSION}",
+            headers={"X-Api-Key": WAHA_API_KEY},
+            timeout=8
+        )
+    except Exception:
+        pass
+
+    time.sleep(2)
+
+    try:
+        requests.post(
+            f"{WAHA_URL}/api/sessions/start",
+            headers={"X-Api-Key": WAHA_API_KEY, "Content-Type": "application/json"},
+            json={"name": WAHA_SESSION},
+            timeout=12
+        )
+    except Exception as e:
+        log.warning("Error reiniciando sesión limpia WAHA: %s", e)
+
     from flask import redirect
     return redirect("/")
 
