@@ -16,7 +16,6 @@ RUN node /app/patch_waha.js
 
 # Copiar archivos del bot y arranque
 COPY bot.py /app/bot.py
-COPY .env /app/.env
 COPY start.sh /app/start.sh
 RUN chmod +x /app/start.sh
 
