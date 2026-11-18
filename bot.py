@@ -282,6 +282,120 @@ def trim_history(chat_id: str):
 # ===========================
 app = Flask(__name__)
 
+@app.route("/")
+def home():
+    """Panel de control visual para ver el estado y escanear el código QR"""
+    session_status = "DESCONOCIDO"
+    try:
+        r = requests.get(
+            f"{WAHA_URL}/api/sessions/{WAHA_SESSION}",
+            headers={"X-Api-Key": WAHA_API_KEY},
+            timeout=5
+        )
+        if r.status_code == 200:
+            session_status = r.json().get("status", "DESCONOCIDO")
+    except Exception:
+        session_status = "INICIANDO"
+
+    status_color = "#10b981" if session_status == "WORKING" else "#f59e0b"
+    status_text = "CONECTADO Y ACTIVO 24/7" if session_status == "WORKING" else f"ESTADO: {session_status} (ESCANEA EL QR)"
+
+    html = f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bot WhatsApp Fortex - 24/7 en la Nube</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-white min-h-screen flex items-center justify-center p-4">
+    <div class="max-w-md w-full bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl text-center">
+        <div class="w-16 h-16 bg-emerald-500/20 rounded-2xl flex items-center justify-center mx-auto mb-4 text-3xl">
+            🤖
+        </div>
+        <h1 class="text-2xl font-black tracking-tight text-white mb-1">Bot WhatsApp Fortex</h1>
+        <p class="text-xs text-slate-400 mb-6">Servidor en la Nube con Inteligencia Artificial (Groq)</p>
+
+        <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold mb-6" style="background: {status_color}22; color: {status_color}; border: 1px solid {status_color}55;">
+            <span class="w-2 h-2 rounded-full animate-ping" style="background: {status_color};"></span>
+            {status_text}
+        </div>
+
+        <div class="bg-slate-950 border border-slate-800 rounded-2xl p-4 mb-6 flex flex-col items-center">
+            <p class="text-xs text-slate-400 mb-3 font-medium">Escanea este código con WhatsApp en tu celular:</p>
+            <div class="relative w-64 h-64 bg-white rounded-xl p-2 flex items-center justify-center shadow-inner">
+                <img id="qr-image" src="/qr?t={int(time.time())}" alt="Código QR WhatsApp" class="w-full h-full object-contain" onerror="this.onerror=null; this.src='data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' width=\\'200\\' height=\\'200\\' viewBox=\\'0 0 200 200\\'><text x=\\'50%\\' y=\\'50%\\' dominant-baseline=\\'middle\\' text-anchor=\\'middle\\' font-size=\\'12\\' fill=\\'%23666\\'>Generando QR... recarga</text></svg>';">
+            </div>
+            <p class="text-[11px] text-slate-500 mt-3">WhatsApp ➔ Dispositivos vinculados ➔ Vincular dispositivo</p>
+        </div>
+
+        <div class="flex gap-2">
+            <button onclick="location.reload()" class="flex-1 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold py-2.5 px-4 rounded-xl text-xs transition cursor-pointer">
+                🔄 Recargar Código QR
+            </button>
+            <a href="/start-session" class="bg-slate-800 hover:bg-slate-700 text-white font-semibold py-2.5 px-4 rounded-xl text-xs transition">
+                ⚡ Forzar Inicio
+            </a>
+        </div>
+        
+        <p class="text-[10px] text-slate-600 mt-6">Render Cloud + WAHA + Groq AI 120B • Activo 24/7</p>
+    </div>
+
+    <script>
+        const status = "{session_status}";
+        if (status !== "WORKING") {{
+            setTimeout(() => {{
+                location.reload();
+            }}, 10000);
+        }}
+    </script>
+</body>
+</html>"""
+    return html
+
+@app.route("/qr")
+def get_qr():
+    """Proxy directo para obtener la imagen del código QR de WAHA"""
+    from flask import Response
+    try:
+        r = requests.get(
+            f"{WAHA_URL}/api/{WAHA_SESSION}/auth/qr",
+            headers={"X-Api-Key": WAHA_API_KEY},
+            timeout=8
+        )
+        if r.status_code == 200 and r.content and len(r.content) > 100:
+            return Response(r.content, mimetype="image/png")
+    except Exception as e:
+        log.warning("Fallo /auth/qr: %s", e)
+
+    try:
+        r = requests.get(
+            f"{WAHA_URL}/api/screenshot?session={WAHA_SESSION}",
+            headers={"X-Api-Key": WAHA_API_KEY},
+            timeout=8
+        )
+        if r.status_code == 200 and r.content and len(r.content) > 100:
+            return Response(r.content, mimetype="image/png")
+    except Exception as e:
+        log.warning("Fallo /screenshot: %s", e)
+
+    return "Generando QR en segundo plano... Por favor refresca en 5 segundos.", 503
+
+@app.route("/start-session")
+def start_session():
+    """Endpoint para forzar inicio de sesión en WAHA"""
+    try:
+        requests.post(
+            f"{WAHA_URL}/api/sessions/start",
+            headers={"X-Api-Key": WAHA_API_KEY, "Content-Type": "application/json"},
+            json={"name": WAHA_SESSION},
+            timeout=10
+        )
+    except Exception as e:
+        log.warning("Error iniciando sesión: %s", e)
+    from flask import redirect
+    return redirect("/")
+
 @app.get("/health")
 def health():
     return jsonify(status="ok")
