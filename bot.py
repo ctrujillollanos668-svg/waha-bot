@@ -405,18 +405,26 @@ def get_qr():
 
 @app.route("/debug")
 def debug():
+    import subprocess
     info = {"waha_url": WAHA_URL, "session": WAHA_SESSION}
     try:
-        r = requests.get(f"{WAHA_URL}/api/sessions", headers={"X-Api-Key": WAHA_API_KEY}, timeout=5)
+        r = requests.get(f"{WAHA_URL}/api/sessions", headers={"X-Api-Key": WAHA_API_KEY}, timeout=2)
         info["sessions"] = r.json()
     except Exception as e:
         info["sessions_err"] = str(e)
+
     try:
-        r = requests.get(f"{WAHA_URL}/api/{WAHA_SESSION}/auth/qr", headers={"X-Api-Key": WAHA_API_KEY}, timeout=5)
-        info["qr_status"] = r.status_code
-        info["qr_resp"] = r.text[:200]
+        ps = subprocess.check_output(["ps", "aux"]).decode()
+        info["processes"] = ps
     except Exception as e:
-        info["qr_err"] = str(e)
+        info["ps_err"] = str(e)
+
+    try:
+        info["root_files"] = [f for f in os.listdir("/") if "entry" in f or "waha" in f or "sh" in f]
+        info["app_files"] = os.listdir("/app")[:20]
+    except Exception as e:
+        info["files_err"] = str(e)
+
     return jsonify(info)
 
 @app.route("/start-session")
