@@ -414,10 +414,29 @@ def debug():
         info["sessions_err"] = str(e)
 
     try:
+        with open("/proc/net/tcp") as f:
+            lines = f.readlines()
+        ports = []
+        for line in lines[1:]:
+            parts = line.strip().split()
+            local_addr = parts[1]
+            port_hex = local_addr.split(":")[1]
+            ports.append(int(port_hex, 16))
+        info["listening_ports"] = list(set(ports))
+    except Exception as e:
+        info["ports_err"] = str(e)
+
+    try:
         ps = subprocess.check_output(["ps", "aux"]).decode()
         info["processes"] = ps
     except Exception as e:
         info["ps_err"] = str(e)
+
+    try:
+        with open("/entrypoint.sh") as f:
+            info["entrypoint_sh"] = f.read()
+    except Exception as e:
+        info["entrypoint_err"] = str(e)
 
     try:
         info["root_files"] = [f for f in os.listdir("/") if "entry" in f or "waha" in f or "sh" in f]
