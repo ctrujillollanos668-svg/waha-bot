@@ -15,7 +15,7 @@ if sys.stderr is None:
 # ===========================
 # 1. CONFIGURACIÓN
 # ===========================
-WAHA_URL = "http://localhost:3000"
+WAHA_URL = "http://127.0.0.1:3000"
 WAHA_API_KEY = "34ec073c9c6e45738171e5fbd14a7498"
 WAHA_SESSION = "default"
 
