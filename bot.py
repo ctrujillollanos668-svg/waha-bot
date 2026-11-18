@@ -554,12 +554,68 @@ def webhook():
     clean_chat = chat_id.replace("@c.us", "").replace("@s.whatsapp.net", "")
     print(f"\n📩 [{clean_chat}] CLIENTE: {body}", flush=True)
 
-    # 3. Descargar imagen si existe
+    # 3. Descargar imagen si existe y procesar comprobante de pago automático
     image_b64 = None
     if has_media:
         image_b64 = get_image_base64(payload)
         if image_b64:
-            print(f"📸 [{clean_chat}] Imagen recibida. Sofía analizando foto...", flush=True)
+            print(f"📸 [{clean_chat}] Imagen recibida. Registrando comprobante en Fortex...", flush=True)
+            try:
+                rep_res = requests.post(
+                    "https://fortex.wasmer.app/api/bot/report-deposit",
+                    json={
+                        "client_phone": clean_chat,
+                        "image_b64": image_b64,
+                    },
+                    timeout=20,
+                )
+                if rep_res.status_code == 200:
+                    rep_data = rep_res.json()
+                    if rep_data.get("success"):
+                        user_name = rep_data.get("user_name", "")
+                        greeting = f" ¡Hola {user_name}!" if user_name else ""
+                        reply = (
+                            f"¡Comprobante de pago recibido con éxito!{greeting} 📸✅\n\n"
+                            "Ya fue enviado directamente a nuestro equipo administrativo para su verificación en el banco. "
+                            "En breves minutos te confirmaremos por este medio cuando tu saldo y tus giros de ruleta queden acreditados en tu cuenta de Fortex. ¡Muchas gracias por tu recarga! 😊"
+                        )
+                        waha_send_text(chat_id, reply)
+                        print(f"🤖 [{clean_chat}] SOFÍA (Comprobante registrado en Telegram): {reply}\n", flush=True)
+                        return jsonify(status="ok", reason="deposit-reported"), 200
+                    elif rep_data.get("user_found") is False:
+                        reply = (
+                            "¡He recibido tu comprobante de pago! 📸\n\n"
+                            "Sin embargo, tu número de WhatsApp no coincide con ninguna cuenta registrada en Fortex. "
+                            "¿Me indicas por favor con qué correo electrónico te registraste en https://fortex.wasmer.app para poder acreditar tu saldo correctamente? 😊"
+                        )
+                        waha_send_text(chat_id, reply)
+                        print(f"🤖 [{clean_chat}] SOFÍA (Usuario no encontrado): {reply}\n", flush=True)
+                        return jsonify(status="ok", reason="user-not-found"), 200
+            except Exception as e:
+                log.warning("Error reportando comprobante a Fortex: %s", e)
+
+    # Si el cliente responde con un correo para vincular un comprobante
+    if "@" in body and "." in body and len(body.split()) == 1:
+        extracted_email = body.strip().lower()
+        try:
+            rep_res = requests.post(
+                "https://fortex.wasmer.app/api/bot/report-deposit",
+                json={
+                    "client_phone": clean_chat,
+                    "email": extracted_email,
+                },
+                timeout=15,
+            )
+            if rep_res.status_code == 200 and rep_res.json().get("success"):
+                user_name = rep_res.json().get("user_name", "")
+                reply = (
+                    f"¡Excelente, cuenta localizada a nombre de *{user_name}*! ✅\n\n"
+                    "Tu solicitud ya quedó vinculada en nuestro sistema. En breves minutos te confirmaremos por aquí cuando tu saldo quede acreditado."
+                )
+                waha_send_text(chat_id, reply)
+                return jsonify(status="ok", reason="email-linked"), 200
+        except Exception as e:
+            log.warning("Error vinculando correo: %s", e)
 
     # 4. Notificar a tu WhatsApp personal si es un cliente nuevo empezando a hablar
     if chat_id not in notified_chats:
