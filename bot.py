@@ -357,17 +357,39 @@ def home():
 def get_qr():
     """Proxy directo para obtener la imagen del código QR de WAHA"""
     from flask import Response
+    import urllib.parse
+
+    # 1. Intentar con ?format=image
+    try:
+        r = requests.get(
+            f"{WAHA_URL}/api/{WAHA_SESSION}/auth/qr?format=image",
+            headers={"X-Api-Key": WAHA_API_KEY, "Accept": "image/png"},
+            timeout=8
+        )
+        if r.status_code == 200 and r.content and len(r.content) > 100 and not r.content.startswith(b"{"):
+            return Response(r.content, mimetype="image/png")
+    except Exception as e:
+        log.warning("Fallo /auth/qr?format=image: %s", e)
+
+    # 2. Si WAHA devuelve JSON con 'raw', renderizar el código QR directamente
     try:
         r = requests.get(
             f"{WAHA_URL}/api/{WAHA_SESSION}/auth/qr",
             headers={"X-Api-Key": WAHA_API_KEY},
             timeout=8
         )
-        if r.status_code == 200 and r.content and len(r.content) > 100:
-            return Response(r.content, mimetype="image/png")
+        if r.status_code == 200:
+            data = r.json()
+            raw_qr = data.get("raw")
+            if raw_qr:
+                qr_api = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(raw_qr)}"
+                qr_resp = requests.get(qr_api, timeout=6)
+                if qr_resp.status_code == 200 and qr_resp.content:
+                    return Response(qr_resp.content, mimetype="image/png")
     except Exception as e:
-        log.warning("Fallo /auth/qr: %s", e)
+        log.warning("Fallo generación de raw QR: %s", e)
 
+    # 3. Intentar screenshot
     try:
         r = requests.get(
             f"{WAHA_URL}/api/screenshot?session={WAHA_SESSION}",
@@ -380,6 +402,22 @@ def get_qr():
         log.warning("Fallo /screenshot: %s", e)
 
     return "Generando QR en segundo plano... Por favor refresca en 5 segundos.", 503
+
+@app.route("/debug")
+def debug():
+    info = {"waha_url": WAHA_URL, "session": WAHA_SESSION}
+    try:
+        r = requests.get(f"{WAHA_URL}/api/sessions", headers={"X-Api-Key": WAHA_API_KEY}, timeout=5)
+        info["sessions"] = r.json()
+    except Exception as e:
+        info["sessions_err"] = str(e)
+    try:
+        r = requests.get(f"{WAHA_URL}/api/{WAHA_SESSION}/auth/qr", headers={"X-Api-Key": WAHA_API_KEY}, timeout=5)
+        info["qr_status"] = r.status_code
+        info["qr_resp"] = r.text[:200]
+    except Exception as e:
+        info["qr_err"] = str(e)
+    return jsonify(info)
 
 @app.route("/start-session")
 def start_session():
