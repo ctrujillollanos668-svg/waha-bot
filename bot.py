@@ -406,43 +406,37 @@ def get_qr():
 @app.route("/debug")
 def debug():
     import subprocess
+    import socket
     info = {"waha_url": WAHA_URL, "session": WAHA_SESSION}
+
+    try:
+        if os.path.exists("/tmp/waha.log"):
+            with open("/tmp/waha.log", "r", encoding="utf-8", errors="ignore") as f:
+                info["waha_log"] = f.read()[-3000:]
+        else:
+            info["waha_log"] = "Archivo /tmp/waha.log no encontrado"
+    except Exception as e:
+        info["waha_log_err"] = str(e)
+
+    open_ports = []
+    for p in [3000, 3001, 5005, 10000]:
+        for host in ["127.0.0.1", "::1"]:
+            try:
+                family = socket.AF_INET6 if ":" in host else socket.AF_INET
+                s = socket.socket(family, socket.SOCK_STREAM)
+                s.settimeout(0.3)
+                if s.connect_ex((host, p)) == 0:
+                    open_ports.append(f"{host}:{p}")
+                s.close()
+            except Exception:
+                pass
+    info["open_ports"] = open_ports
+
     try:
         r = requests.get(f"{WAHA_URL}/api/sessions", headers={"X-Api-Key": WAHA_API_KEY}, timeout=2)
         info["sessions"] = r.json()
     except Exception as e:
         info["sessions_err"] = str(e)
-
-    try:
-        with open("/proc/net/tcp") as f:
-            lines = f.readlines()
-        ports = []
-        for line in lines[1:]:
-            parts = line.strip().split()
-            local_addr = parts[1]
-            port_hex = local_addr.split(":")[1]
-            ports.append(int(port_hex, 16))
-        info["listening_ports"] = list(set(ports))
-    except Exception as e:
-        info["ports_err"] = str(e)
-
-    try:
-        ps = subprocess.check_output(["ps", "aux"]).decode()
-        info["processes"] = ps
-    except Exception as e:
-        info["ps_err"] = str(e)
-
-    try:
-        with open("/entrypoint.sh") as f:
-            info["entrypoint_sh"] = f.read()
-    except Exception as e:
-        info["entrypoint_err"] = str(e)
-
-    try:
-        info["root_files"] = [f for f in os.listdir("/") if "entry" in f or "waha" in f or "sh" in f]
-        info["app_files"] = os.listdir("/app")[:20]
-    except Exception as e:
-        info["files_err"] = str(e)
 
     return jsonify(info)
 
