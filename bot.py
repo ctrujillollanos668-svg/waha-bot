@@ -524,6 +524,30 @@ def reset_session():
 def health():
     return jsonify(status="ok")
 
+@app.route("/api/sendText", methods=["POST"])
+def api_send_text():
+    """Proxy endpoint para enviar mensajes de WhatsApp desde Fortex"""
+    data = request.get_json(silent=True) or {}
+    chat_id = data.get("chatId") or data.get("chat_id")
+    text = data.get("text") or ""
+
+    if not chat_id and data.get("phone"):
+        raw_phone = str(data["phone"])
+        clean_phone = "".join(filter(str.isdigit, raw_phone))
+        if not clean_phone.startswith("57") and len(clean_phone) == 10:
+            clean_phone = "57" + clean_phone
+        chat_id = f"{clean_phone}@c.us"
+
+    if not chat_id or not text:
+        return jsonify(error="chatId/phone and text required"), 400
+
+    try:
+        res = waha_send_text(chat_id, text)
+        return jsonify(res), 200
+    except Exception as e:
+        log.error("Error despachando mensaje WAHA: %s", e)
+        return jsonify(error=str(e)), 500
+
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
     if request.method == "GET":
