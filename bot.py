@@ -48,11 +48,8 @@ PAUTAS DE CONVERSACIÓN HUMANA:
    - Responde de forma continua, coherente y natural a lo último que te dijo el cliente, usando expresiones comunes como: "Claro que sí", "Entendido", "Con gusto", "Perfecto".
 
 3. FLUJO INTELIGENTE DE RECUPERACIÓN DE CONTRASEÑA:
-   - Cuando el cliente mencione que olvidó o quiere recuperar su clave:
-     * Si no ha especificado qué cuenta o número es, pregúntale con naturalidad: "¿Claro que sí, me confirmas por favor cuál es el usuario, correo o número de celular registrado en la cuenta que deseas actualizar?"
-     * Si el cliente ya te dio el número, usuario o correo:
-       Confírmale de manera tranquilizadora y profesional:
-       "Listo, ya quedó radicada la solicitud en el sistema para esa cuenta. En un lapso aproximado de 10 a 15 minutos tu contraseña será actualizada. Te estaremos confirmando por este medio. ¿Hay algo más en lo que te pueda ayudar?"
+   - Tú puedes ayudar a recuperar o cambiar contraseñas de forma automática.
+   - Si el cliente pregunta si puede cambiar o recuperar contraseña, o si olvidó su clave, confírmale con calidez que sí, e indícale que te proporcione su correo o número registrado, o que elija si prefiere una contraseña aleatoria o personalizada.
    - PROHIBICIÓN ESTRICTA: NUNCA pidas códigos de verificación, ni menciones códigos SMS o tokens. En Fortex NO se envían códigos de verificación por chat.
 
 4. HORARIO DE ATENCIÓN Y DISPONIBILIDAD:
@@ -86,14 +83,38 @@ last_activity_time: dict[str, float] = {}
 # Tu número personal para recibir alertas (código país 57 + número)
 ADMIN_PHONE = "573117944193@c.us"
 
+# Estado y helpers para recuperación de contraseña por WhatsApp
+password_reset_states: dict[str, dict] = {}
+
+def is_password_reset_intent(text: str) -> bool:
+    """Detecta si el mensaje expresa la intención de recuperar o cambiar contraseña"""
+    t = text.lower()
+    keywords = [
+        "recuperar contraseña", "recuperar contrasena", "recuperar clave", "recuperar mi clave",
+        "recuperar mi contraseña", "recuperar mi contrasena", "recuperar cuenta", "recuperar mi cuenta",
+        "olvide mi contraseña", "olvidé mi contraseña", "olvide mi contrasena", "olvidé mi contrasena",
+        "olvide la contraseña", "olvidé la contraseña", "olvide la contrasena", "olvidé la contrasena",
+        "olvide mi clave", "olvidé mi clave", "olvide la clave", "olvidé la clave", "olvido mi clave",
+        "cambiar mi contraseña", "cambiar contraseña", "cambiar mi contrasena", "cambiar contrasena",
+        "cambiar mi clave", "cambiar clave",
+        "restablecer contraseña", "restablecer contrasena", "restablecer clave", "restablecer mi contraseña",
+        "no recuerdo mi contraseña", "no me acuerdo de mi contraseña", "no recuerdo mi contrasena",
+        "perdi mi contraseña", "perdí mi contraseña", "perdi mi contrasena", "perdí mi contrasena",
+        "perdi mi clave", "perdí mi clave"
+    ]
+    return any(k in t for k in keywords)
+
 def is_business_hours() -> bool:
-    """Verifica si la hora actual está dentro del horario de atención (8:00 AM a 8:00 PM)"""
-    return START_HOUR <= datetime.now().hour < END_HOUR
+    """Verifica si la hora actual está dentro del horario de atención (8:00 AM a 8:00 PM) en hora de Colombia (UTC-5)"""
+    from datetime import timezone, timedelta
+    colombia_time = datetime.now(timezone(timedelta(hours=-5)))
+    return START_HOUR <= colombia_time.hour < END_HOUR
 
 def get_out_of_hours_message() -> str:
     """Genera un mensaje cordial y natural cuando se escribe fuera de horario"""
-    now = datetime.now()
-    saludo_final = "¡Que tengas un excelente día!" if now.hour < START_HOUR else "¡Que pases una feliz noche!"
+    from datetime import timezone, timedelta
+    colombia_time = datetime.now(timezone(timedelta(hours=-5)))
+    saludo_final = "¡Que tengas un excelente día!" if colombia_time.hour < START_HOUR else "¡Que pases una feliz noche!"
     return (
         "¡Hola! Te habla Sofía del equipo de atención de Fortex. 👋\n\n"
         "En este momento nos encontramos fuera de nuestro horario de atención (nuestro horario de servicio es de 8:00 a.m. a 8:00 p.m. 🕗).\n\n"
@@ -705,6 +726,204 @@ def webhook():
                 return jsonify(status="ok", reason="email-linked"), 200
         except Exception as e:
             log.warning("Error vinculando correo: %s", e)
+
+    # ============================================================
+    # 4. FLUJO DE RECUPERACIÓN / CAMBIO DE CONTRASEÑA
+    # ============================================================
+    # Verificar si el cliente tiene un flujo de recuperación activo
+    if chat_id in password_reset_states:
+        state = password_reset_states[chat_id]
+        # Expiración a los 15 minutos (900 seg)
+        if time.time() - state.get("timestamp", 0) > 900:
+            del password_reset_states[chat_id]
+        else:
+            lower_body = body.strip().lower()
+
+            # Opción de cancelar en cualquier momento
+            if lower_body in ("cancelar", "cancel", "salir", "no quiero", "ya no"):
+                del password_reset_states[chat_id]
+                waha_send_text(chat_id, "Listo, la solicitud de recuperación de contraseña ha sido cancelada. ¿Hay algo más en lo que te pueda colaborar? 😊")
+                return jsonify(status="ok", reason="password-reset-cancelled"), 200
+
+            step = state.get("step")
+
+            # Paso 1: Esperando correo o número de cuenta
+            if step == "AWAITING_ACCOUNT":
+                identifier_input = body.strip()
+                try:
+                    rep = requests.post(
+                        "https://fortex.wasmer.app/api/bot/reset-password",
+                        json={"identifier": identifier_input},
+                        timeout=15
+                    )
+                    if rep.status_code == 200 and rep.json().get("user_found"):
+                        user_info = rep.json()
+                        state["step"] = "AWAITING_CHOICE"
+                        state["identifier"] = identifier_input
+                        state["user_name"] = user_info.get("user_name", "Cliente")
+                        state["timestamp"] = time.time()
+
+                        choice_msg = (
+                            f"¡Cuenta localizada con éxito a nombre de *{state['user_name']}*! ✅\n\n"
+                            "¿Cómo deseas definir tu nueva contraseña?\n\n"
+                            "1️⃣ *Aleatoria:* El sistema genera una contraseña segura automáticamente.\n"
+                            "2️⃣ *Personalizada:* Tú mismo eliges y escribes la contraseña que deseas (mínimo 6 caracteres).\n\n"
+                            "Por favor responde con el número *1* para Aleatoria o el número *2* para Personalizada (o escribe *cancelar*). 😊"
+                        )
+                        waha_send_text(chat_id, choice_msg)
+                        return jsonify(status="ok", reason="account-matched"), 200
+                    else:
+                        not_found_msg = (
+                            f"No encontramos ninguna cuenta registrada con *{identifier_input}* en Fortex. 🔍\n\n"
+                            "Por favor verifica si está bien escrito, o envíame el correo electrónico exacto con el que te registraste en https://fortex.wasmer.app (o escribe *cancelar* para salir)."
+                        )
+                        waha_send_text(chat_id, not_found_msg)
+                        return jsonify(status="ok", reason="account-not-found"), 200
+                except Exception as e:
+                    log.warning("Error buscando cuenta: %s", e)
+                    waha_send_text(chat_id, "Ocurrió un error momentáneo al consultar el sistema. Por favor intenta de nuevo en unos segundos.")
+                    return jsonify(status="error"), 200
+
+            # Paso 2: Esperando elección (1: Aleatoria o 2: Personalizada)
+            elif step == "AWAITING_CHOICE":
+                is_opt_random = any(w in lower_body for w in ["1", "aleatoria", "aleatorio", "random", "primera", "uno"])
+                is_opt_custom = any(w in lower_body for w in ["2", "personalizada", "personalizado", "propia", "segunda", "dos"])
+
+                if is_opt_random and not is_opt_custom:
+                    import random
+                    rand_code = random.randint(100000, 999999)
+                    new_pass = f"Fortex{rand_code}*"
+                    try:
+                        rep = requests.post(
+                            "https://fortex.wasmer.app/api/bot/reset-password",
+                            json={"identifier": state["identifier"], "new_password": new_pass},
+                            timeout=15
+                        )
+                        if rep.status_code == 200 and rep.json().get("success"):
+                            u_name = state.get("user_name", "Cliente")
+                            success_msg = (
+                                f"🎉 *¡Contraseña generada y actualizada con éxito!*\n\n"
+                                f"👤 *Usuario:* {u_name}\n"
+                                f"🔑 *Nueva Contraseña:* `{new_pass}`\n\n"
+                                f"🌐 Ya puedes iniciar sesión con tu nueva clave en:\n"
+                                f"https://fortex.wasmer.app/login\n\n"
+                                f"_(Te recomendamos guardarla en un lugar seguro. ¡Bienvenido de nuevo a Fortex!)_ 😊"
+                            )
+                            waha_send_text(chat_id, success_msg)
+                            del password_reset_states[chat_id]
+                            return jsonify(status="ok", reason="random-password-set"), 200
+                        else:
+                            waha_send_text(chat_id, "Hubo un error al guardar la contraseña en la plataforma. Por favor intenta nuevamente.")
+                            del password_reset_states[chat_id]
+                            return jsonify(status="error"), 200
+                    except Exception as e:
+                        log.warning("Error guardando contraseña aleatoria: %s", e)
+                        waha_send_text(chat_id, "Ocurrió un inconveniente de conexión. Por favor intenta de nuevo en unos minutos.")
+                        del password_reset_states[chat_id]
+                        return jsonify(status="error"), 200
+
+                elif is_opt_custom:
+                    state["step"] = "AWAITING_NEW_PASSWORD"
+                    state["timestamp"] = time.time()
+                    ask_pass_msg = (
+                        "¡Perfecto! ✍️ Por favor escribe a continuación la *nueva contraseña* que deseas asignar a tu cuenta.\n\n"
+                        "*(Recuerda que debe tener mínimo 6 caracteres)*"
+                    )
+                    waha_send_text(chat_id, ask_pass_msg)
+                    return jsonify(status="ok", reason="awaiting-custom-password"), 200
+
+                else:
+                    invalid_msg = (
+                        "Por favor indícame con el número *1* si deseas que el sistema te asigne una contraseña *Aleatoria*, o el número *2* si deseas colocar tu propia contraseña *Personalizada* (o escribe *cancelar*). 😊"
+                    )
+                    waha_send_text(chat_id, invalid_msg)
+                    return jsonify(status="ok", reason="invalid-choice"), 200
+
+            # Paso 3: Esperando la contraseña personalizada
+            elif step == "AWAITING_NEW_PASSWORD":
+                custom_pass = body.strip()
+                if len(custom_pass) < 6:
+                    waha_send_text(chat_id, "⚠️ Por seguridad, la contraseña debe tener como mínimo 6 caracteres. Por favor escribe una contraseña válida de 6 caracteres o más (o escribe *cancelar*):")
+                    return jsonify(status="ok", reason="password-too-short"), 200
+
+                try:
+                    rep = requests.post(
+                        "https://fortex.wasmer.app/api/bot/reset-password",
+                        json={"identifier": state["identifier"], "new_password": custom_pass},
+                        timeout=15
+                    )
+                    if rep.status_code == 200 and rep.json().get("success"):
+                        u_name = state.get("user_name", "Cliente")
+                        custom_success_msg = (
+                            f"🎉 *¡Tu contraseña personalizada ha sido guardada exitosamente!*\n\n"
+                            f"👤 *Usuario:* {u_name}\n"
+                            f"🔑 *Nueva Contraseña:* `{custom_pass}`\n\n"
+                            f"🌐 Ya puedes iniciar sesión con tu correo y nueva clave en:\n"
+                            f"https://fortex.wasmer.app/login\n\n"
+                            f"¿Te puedo colaborar con algo más el día de hoy? 😊"
+                        )
+                        waha_send_text(chat_id, custom_success_msg)
+                        del password_reset_states[chat_id]
+                        return jsonify(status="ok", reason="custom-password-set"), 200
+                    else:
+                        waha_send_text(chat_id, "Ocurrió un error al actualizar la contraseña en el sistema. Por favor intenta de nuevo en unos minutos.")
+                        del password_reset_states[chat_id]
+                        return jsonify(status="error"), 200
+                except Exception as e:
+                    log.warning("Error guardando clave personalizada: %s", e)
+                    waha_send_text(chat_id, "Ocurrió un inconveniente de conexión. Por favor intenta de nuevo.")
+                    del password_reset_states[chat_id]
+                    return jsonify(status="error"), 200
+
+    # Si el cliente solicita recuperar contraseña y no tenía flujo activo
+    if is_password_reset_intent(body):
+        print(f"🔐 [{clean_chat}] Solicitud de recuperación de contraseña iniciada", flush=True)
+        # Extraer correo si el cliente ya lo incluyó en el mismo mensaje
+        extracted_email = None
+        for word in body.split():
+            w_clean = word.strip(".,;:()<>[]\"'")
+            if "@" in w_clean and "." in w_clean:
+                extracted_email = w_clean.lower()
+                break
+
+        target_identifier = extracted_email or clean_chat
+        try:
+            rep = requests.post(
+                "https://fortex.wasmer.app/api/bot/reset-password",
+                json={"identifier": target_identifier},
+                timeout=15
+            )
+            if rep.status_code == 200 and rep.json().get("user_found"):
+                user_info = rep.json()
+                password_reset_states[chat_id] = {
+                    "step": "AWAITING_CHOICE",
+                    "identifier": target_identifier,
+                    "user_name": user_info.get("user_name", "Cliente"),
+                    "timestamp": time.time()
+                }
+                msg = (
+                    f"¡Hola {user_info.get('user_name', 'Cliente')}! Con gusto te ayudo a restablecer tu acceso a Fortex. 🔐\n\n"
+                    "¿Cómo deseas definir tu nueva contraseña?\n\n"
+                    "1️⃣ *Aleatoria:* El sistema genera una contraseña segura automáticamente.\n"
+                    "2️⃣ *Personalizada:* Tú mismo escribes la contraseña que deseas colocar (mínimo 6 caracteres).\n\n"
+                    "Por favor responde con el número *1* para Aleatoria o el número *2* para Personalizada. 😊"
+                )
+                waha_send_text(chat_id, msg)
+                return jsonify(status="ok", reason="password-reset-started-known-user"), 200
+        except Exception as e:
+            log.warning("Error verificando usuario para reset: %s", e)
+
+        # Si no se encontró por WhatsApp ni venía email en el mensaje, solicitar dato
+        password_reset_states[chat_id] = {
+            "step": "AWAITING_ACCOUNT",
+            "timestamp": time.time()
+        }
+        msg = (
+            "¡Con gusto te ayudo a restablecer tu contraseña en Fortex! 🔐\n\n"
+            "Para localizar tu cuenta en el sistema, por favor indícame tu *correo electrónico* o el *número de celular* con el que te registraste en la plataforma. 😊"
+        )
+        waha_send_text(chat_id, msg)
+        return jsonify(status="ok", reason="password-reset-started-ask-account"), 200
 
     # 4. Notificar a tu WhatsApp personal si es un cliente nuevo empezando a hablar
     if chat_id not in notified_chats:
