@@ -749,8 +749,16 @@ def webhook():
 
             # Paso 1: Esperando elección (1: Aleatoria o 2: Personalizada)
             if step == "AWAITING_CHOICE":
-                is_opt_random = any(w in lower_body for w in ["1", "aleatoria", "aleatorio", "random", "primera", "uno"])
-                is_opt_custom = any(w in lower_body for w in ["2", "personalizada", "personalizado", "propia", "segunda", "dos"])
+                body_clean = lower_body.strip()
+                words = body_clean.split()
+
+                # Solo reconocer opción si es exactamente 1 o palabras clave claras (no si el texto es un número de teléfono o frase larga)
+                is_opt_random = body_clean in ("1", "1.", "uno", "aleatoria", "aleatorio", "random", "la 1", "opcion 1", "opción 1") or (
+                    len(words) <= 3 and any(w in ("1", "aleatoria", "aleatorio", "random", "uno") for w in words)
+                )
+                is_opt_custom = body_clean in ("2", "2.", "dos", "personalizada", "personalizado", "propia", "la 2", "opcion 2", "opción 2") or (
+                    len(words) <= 3 and any(w in ("2", "personalizada", "personalizado", "propia", "dos") for w in words)
+                )
 
                 if is_opt_random and not is_opt_custom:
                     import random
