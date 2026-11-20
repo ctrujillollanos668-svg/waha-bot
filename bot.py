@@ -747,45 +747,8 @@ def webhook():
 
             step = state.get("step")
 
-            # Paso 1: Esperando correo o número de cuenta
-            if step == "AWAITING_ACCOUNT":
-                identifier_input = body.strip()
-                try:
-                    rep = requests.post(
-                        "https://fortex.wasmer.app/api/bot/reset-password",
-                        json={"identifier": identifier_input},
-                        timeout=15
-                    )
-                    if rep.status_code == 200 and rep.json().get("user_found"):
-                        user_info = rep.json()
-                        state["step"] = "AWAITING_CHOICE"
-                        state["identifier"] = identifier_input
-                        state["user_name"] = user_info.get("user_name", "Cliente")
-                        state["timestamp"] = time.time()
-
-                        choice_msg = (
-                            f"¡Cuenta localizada con éxito a nombre de *{state['user_name']}*! ✅\n\n"
-                            "¿Cómo deseas definir tu nueva contraseña?\n\n"
-                            "1️⃣ *Aleatoria:* El sistema genera una contraseña segura automáticamente.\n"
-                            "2️⃣ *Personalizada:* Tú mismo eliges y escribes la contraseña que deseas (mínimo 6 caracteres).\n\n"
-                            "Por favor responde con el número *1* para Aleatoria o el número *2* para Personalizada (o escribe *cancelar*). 😊"
-                        )
-                        waha_send_text(chat_id, choice_msg)
-                        return jsonify(status="ok", reason="account-matched"), 200
-                    else:
-                        not_found_msg = (
-                            f"No encontramos ninguna cuenta registrada con *{identifier_input}* en Fortex. 🔍\n\n"
-                            "Por favor verifica si está bien escrito, o envíame el correo electrónico exacto con el que te registraste en https://fortex.wasmer.app (o escribe *cancelar* para salir)."
-                        )
-                        waha_send_text(chat_id, not_found_msg)
-                        return jsonify(status="ok", reason="account-not-found"), 200
-                except Exception as e:
-                    log.warning("Error buscando cuenta: %s", e)
-                    waha_send_text(chat_id, "Ocurrió un error momentáneo al consultar el sistema. Por favor intenta de nuevo en unos segundos.")
-                    return jsonify(status="error"), 200
-
-            # Paso 2: Esperando elección (1: Aleatoria o 2: Personalizada)
-            elif step == "AWAITING_CHOICE":
+            # Paso 1: Esperando elección (1: Aleatoria o 2: Personalizada)
+            if step == "AWAITING_CHOICE":
                 is_opt_random = any(w in lower_body for w in ["1", "aleatoria", "aleatorio", "random", "primera", "uno"])
                 is_opt_custom = any(w in lower_body for w in ["2", "personalizada", "personalizado", "propia", "segunda", "dos"])
 
@@ -839,7 +802,7 @@ def webhook():
                     waha_send_text(chat_id, invalid_msg)
                     return jsonify(status="ok", reason="invalid-choice"), 200
 
-            # Paso 3: Esperando la contraseña personalizada
+            # Paso 2: Esperando la contraseña personalizada
             elif step == "AWAITING_NEW_PASSWORD":
                 custom_pass = body.strip()
                 if len(custom_pass) < 6:
@@ -878,26 +841,17 @@ def webhook():
     # Si el cliente solicita recuperar contraseña y no tenía flujo activo
     if is_password_reset_intent(body):
         print(f"🔐 [{clean_chat}] Solicitud de recuperación de contraseña iniciada", flush=True)
-        # Extraer correo si el cliente ya lo incluyó en el mismo mensaje
-        extracted_email = None
-        for word in body.split():
-            w_clean = word.strip(".,;:()<>[]\"'")
-            if "@" in w_clean and "." in w_clean:
-                extracted_email = w_clean.lower()
-                break
-
-        target_identifier = extracted_email or clean_chat
         try:
             rep = requests.post(
                 "https://fortex.wasmer.app/api/bot/reset-password",
-                json={"identifier": target_identifier},
+                json={"identifier": clean_chat},
                 timeout=15
             )
             if rep.status_code == 200 and rep.json().get("user_found"):
                 user_info = rep.json()
                 password_reset_states[chat_id] = {
                     "step": "AWAITING_CHOICE",
-                    "identifier": target_identifier,
+                    "identifier": clean_chat,
                     "user_name": user_info.get("user_name", "Cliente"),
                     "timestamp": time.time()
                 }
@@ -913,17 +867,24 @@ def webhook():
         except Exception as e:
             log.warning("Error verificando usuario para reset: %s", e)
 
-        # Si no se encontró por WhatsApp ni venía email en el mensaje, solicitar dato
-        password_reset_states[chat_id] = {
-            "step": "AWAITING_ACCOUNT",
-            "timestamp": time.time()
-        }
-        msg = (
-            "¡Con gusto te ayudo a restablecer tu contraseña en Fortex! 🔐\n\n"
-            "Para localizar tu cuenta en el sistema, por favor indícame tu *correo electrónico* o el *número de celular* con el que te registraste en la plataforma. 😊"
+        # Si el número de WhatsApp NO coincide con ninguna cuenta registrada:
+        security_msg = (
+            f"🔒 *Seguridad Fortex:* Por protección de tu cuenta y fondos, el restablecimiento automático de contraseña únicamente está habilitado escribiendo desde el número de WhatsApp registrado en la plataforma.\n\n"
+            f"Tu número actual (+{clean_chat}) no coincide con ninguna cuenta activa. Si perdiste o cambiaste tu línea, por favor comunícate directamente con soporte para que un asesor verifique tu identidad personalmente. 😊"
         )
-        waha_send_text(chat_id, msg)
-        return jsonify(status="ok", reason="password-reset-started-ask-account"), 200
+        waha_send_text(chat_id, security_msg)
+
+        # Alertar al administrador por Telegram del intento no autorizado
+        try:
+            requests.post(
+                "https://fortex.wasmer.app/api/bot/report-suspicious-reset",
+                json={"phone": clean_chat, "message": body},
+                timeout=10
+            )
+        except Exception:
+            pass
+
+        return jsonify(status="ok", reason="password-reset-blocked-unregistered-phone"), 200
 
     # 4. Notificar a tu WhatsApp personal si es un cliente nuevo empezando a hablar
     if chat_id not in notified_chats:
