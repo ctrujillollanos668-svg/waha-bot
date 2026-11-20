@@ -122,15 +122,91 @@ def get_out_of_hours_message() -> str:
         f"{saludo_final}"
     )
 
-def notify_admin_new_client(client_chat_id: str, message_text: str):
+def resolve_real_phone_and_name(chat_id: str, payload: dict) -> tuple[str, str]:
+    """Resuelve el número de teléfono real del cliente y su nombre de WhatsApp, eliminando @lid"""
+    push_name = payload.get("pushName") or (payload.get("_data") or {}).get("notifyName") or ""
+
+    # Si es un número normal (@c.us o @s.whatsapp.net)
+    if "@lid" not in chat_id:
+        clean = chat_id.replace("@c.us", "").replace("@s.whatsapp.net", "").strip()
+        return clean, push_name
+
+    # Si es un @lid, revisar en los metadatos del mensaje
+    _data = payload.get("_data") or {}
+    if isinstance(_data, dict):
+        for key in ["pn", "phoneNumber", "senderPhone", "author", "participant"]:
+            val = str(_data.get(key) or "")
+            if val and "@lid" not in val and any(c.isdigit() for c in val):
+                clean = "".join(filter(str.isdigit, val))
+                if len(clean) >= 10:
+                    return clean, push_name
+
+    for key in ["sender", "author", "participant"]:
+        val = str(payload.get(key) or "")
+        if val and "@lid" not in val and any(c.isdigit() for c in val):
+            clean = "".join(filter(str.isdigit, val))
+            if len(clean) >= 10:
+                return clean, push_name
+
+    # Consultar a WAHA el endpoint de resolución de LID
+    clean_lid = chat_id.strip()
+    try:
+        r = requests.get(
+            f"{WAHA_URL}/api/{WAHA_SESSION}/lids/{clean_lid}",
+            headers={"X-Api-Key": WAHA_API_KEY},
+            timeout=3
+        )
+        if r.status_code == 200:
+            res_json = r.json()
+            if isinstance(res_json, dict):
+                raw_pn = res_json.get("pn") or res_json.get("id") or res_json.get("phoneNumber") or ""
+                clean_pn = "".join(filter(str.isdigit, str(raw_pn)))
+                if len(clean_pn) >= 10:
+                    return clean_pn, push_name
+            elif isinstance(res_json, str) and "@lid" not in res_json:
+                clean_pn = "".join(filter(str.isdigit, res_json))
+                if len(clean_pn) >= 10:
+                    return clean_pn, push_name
+    except Exception as e:
+        log.warning("Fallo al resolver LID vía /lids: %s", e)
+
+    # Consultar /api/contacts en WAHA
+    try:
+        r = requests.get(
+            f"{WAHA_URL}/api/contacts?contactId={clean_lid}",
+            headers={"X-Api-Key": WAHA_API_KEY},
+            timeout=3
+        )
+        if r.status_code == 200:
+            c_data = r.json()
+            if isinstance(c_data, list) and c_data:
+                c_data = c_data[0]
+            if isinstance(c_data, dict):
+                num = c_data.get("number") or str(c_data.get("id", {}).get("user", ""))
+                clean_num = "".join(filter(str.isdigit, str(num)))
+                if len(clean_num) >= 10:
+                    name = c_data.get("pushname") or c_data.get("name") or push_name
+                    return clean_num, name
+    except Exception:
+        pass
+
+    clean_digits = "".join(filter(str.isdigit, chat_id))
+    return clean_digits, push_name
+
+def notify_admin_new_client(client_phone: str, message_text: str, client_name: str = ""):
     """Notifica al administrador cuando un nuevo cliente inicia conversación"""
-    if client_chat_id == ADMIN_PHONE:
+    clean_admin = "".join(filter(str.isdigit, ADMIN_PHONE))
+    clean_client = "".join(filter(str.isdigit, client_phone))
+
+    if clean_client and (clean_client in clean_admin or clean_admin.endswith(clean_client)):
         return  # Si estás probando desde tu propio número, no te manda alerta a ti mismo
 
-    clean_number = client_chat_id.replace("@c.us", "").replace("@s.whatsapp.net", "")
+    phone_display = f"+{clean_client}" if clean_client else "Sin número"
+    name_display = f" ({client_name})" if client_name else ""
+
     alert = (
         f"🔔 *NUEVO CLIENTE EN FORTEX*\n\n"
-        f"👤 *Cliente:* +{clean_number}\n"
+        f"👤 *Cliente:* {phone_display}{name_display}\n"
         f"💬 *Mensaje:* \"{message_text}\"\n"
         f"🤖 _El bot ya está atendiendo la conversación._"
     )
@@ -661,8 +737,9 @@ def webhook():
         if len(processed_message_ids) > 2000:
             processed_message_ids.clear()
 
-    clean_chat = chat_id.replace("@c.us", "").replace("@s.whatsapp.net", "")
-    print(f"\n📩 [{clean_chat}] CLIENTE: {body}", flush=True)
+    real_phone, client_push_name = resolve_real_phone_and_name(chat_id, payload)
+    clean_chat = real_phone
+    print(f"\n📩 [{clean_chat}] CLIENTE ({client_push_name}): {body}", flush=True)
 
     # 3. Descargar imagen si existe y procesar comprobante de pago automático
     image_b64 = None
@@ -897,7 +974,7 @@ def webhook():
     # 4. Notificar a tu WhatsApp personal si es un cliente nuevo empezando a hablar
     if chat_id not in notified_chats:
         notified_chats.add(chat_id)
-        notify_admin_new_client(chat_id, body)
+        notify_admin_new_client(clean_chat, body, client_push_name)
 
     # 5. Control de Horario de Atención (8:00 AM a 8:00 PM)
     if not is_business_hours():
