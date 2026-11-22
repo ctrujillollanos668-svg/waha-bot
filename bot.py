@@ -998,19 +998,30 @@ def webhook():
     msg_type = str(payload.get("type") or "")
     print(f"\n📩 [{clean_chat}] CLIENTE ({client_push_name}, tipo={msg_type}, grupo={is_group}): {body}", flush=True)
 
-    # 2.1. Manejo amigable y humano de STICKERS (sin pedir comprobantes ni decir cosas raras)
-    if msg_type == "sticker":
+    # 2.1. Detección completa y amigable de STICKERS (mimetype webp, type sticker, Flork, etc.)
+    media_obj = payload.get("media") if isinstance(payload.get("media"), dict) else {}
+    mimetype = str(media_obj.get("mimetype") or payload.get("mimetype") or "").lower()
+    is_sticker_msg = bool(
+        msg_type == "sticker"
+        or "webp" in mimetype
+        or payload.get("isSticker") is True
+        or (isinstance(payload.get("_data"), dict) and payload.get("_data", {}).get("type") == "sticker")
+        or media_obj.get("type") == "sticker"
+    )
+
+    if is_sticker_msg:
         if is_group:
-            log.info("Sticker recibido en grupo %s de %s", chat_id, clean_chat)
+            log.info("Sticker recibido en grupo %s de %s - ignorado silenciosamente.", chat_id, clean_chat)
             return jsonify(status="ok", reason="sticker-in-group-ignored"), 200
         else:
             import random
             sticker_greetings = [
-                f"¡Jajaja qué buen sticker! 😂👋 ¿Cómo estás {client_push_name or ''}? ¿En qué te puedo colaborar hoy con tu cuenta de Fortex? 🚀",
-                f"¡Jajaja con toda la energía! 😄 Cuéntame, ¿tienes alguna duda con tus planes de inversión o necesitas ayuda para recargar en Fortex? 📈",
-                f"¡Buenísimo ese sticker! 🚀 ¿Cómo va todo hoy? Dime en qué te puedo colaborar con tu cuenta de Fortex. 😊"
+                f"¡Jajaja qué buen sticker! 😂👋 ¿Cómo vas {client_push_name or ''}? ¿Procesando la mente o qué? Jaja, cuéntame en qué te puedo colaborar hoy con tu cuenta de Fortex. 🚀",
+                f"¡Jajaja excelente sticker! 😂 Cuéntame, ¿tienes alguna duda con tus planes o necesitas una mano para recargar y empezar a ganar en Fortex? 📈💰",
+                f"¡Jajaja buenísimo! 😄👋 Dime en qué te puedo ayudar hoy con la plataforma de Fortex, con todo el gusto te asesoro. 😊"
             ]
             waha_send_text(chat_id, random.choice(sticker_greetings))
+            print(f"🤖 [{clean_chat}] SOFÍA (Sticker respondido con humor): {sticker_greetings[0]}\n", flush=True)
             return jsonify(status="ok", reason="sticker-replied"), 200
 
     # 2.2. Manejo de NOTAS DE VOZ O AUDIOS
@@ -1095,7 +1106,7 @@ def webhook():
                 # Enriquecemos el contexto para que Sofía (IA) responda con inteligencia humana y resolutiva.
                 user_sent_real_text = bool(body and body != "Hola, te acabo de enviar esta imagen / foto para que la revises.")
 
-                is_visual_bug = is_tech or any(w in reason_detail.lower() for w in ["logo", "error", "pantalla", "web", "página", "desordenada", "carga", "visual", "fo", "registro"])
+                is_visual_bug = is_tech or any(w in reason_detail.lower() for w in ["logo fo", "error en la web", "pantalla de inicio", "web de fortex", "página desordenada", "no carga la página", "visualización web", "letras fo", "formulario de registro"])
 
                 if is_visual_bug:
                     context_hint = (
