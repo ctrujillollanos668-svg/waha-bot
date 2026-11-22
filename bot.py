@@ -383,115 +383,113 @@ def get_image_base64(payload: dict) -> str | None:
 
 def classify_receipt_image(image_b64: str, user_text: str = "") -> dict:
     """
-    Usa visión multimodal de Groq para determinar si la imagen es un comprobante
-    de pago/transferencia bancaria real (Nequi, Bancolombia, etc.) o si es una
-    captura de pantalla de un inconveniente técnico en la plataforma web, error, consulta, etc.
+    Usa visión multimodal de Groq para determinar el contenido exacto de la imagen:
+    - Comprobante bancario (Nequi, Bancolombia)
+    - Documento de identidad (cédula de ciudadanía, tarjeta)
+    - Captura técnica de la plataforma Fortex
+    - Foto casual, sticker o meme
     """
-    tech_keywords = ["como", "cómo", "arreglar", "sale", "así", "asi", "no carga", "error", "pantalla", "logo", "letra", "letras", "fo", "página", "pagina", "registrar", "registro", "desordenada", "ayuda", "miren", "mira", "mire", "feo", "dañado", "roto", "ver", "veo", "por que", "porque", "que paso", "qué pasó", "arregla", "problema", "iniciar", "entrar", "dañada"]
-    has_tech_kw = any(kw in (user_text or "").lower() for kw in tech_keywords)
-
-    if not GROQ_API_KEY:
-        log.warning("GROQ_API_KEY no configurado para visión.")
-        keywords = ["comprobante", "pago", "recarga", "transferencia", "consignacion", "consignación", "nequi", "bancolombia", "consigne", "pague", "transfiri"]
-        has_kw = any(kw in (user_text or "").lower() for kw in keywords)
-        return {
-            "is_receipt": False,
-            "bank": "Desconocido",
-            "amount": 0,
-            "is_technical_issue": has_tech_kw,
-            "reason": "Captura de pantalla o consulta técnica sobre la plataforma Fortex" if has_tech_kw else "Captura o imagen adjunta",
-            "fallback": True,
-            "had_keywords": has_kw
-        }
+    # Frases técnicas explícitas (SOLO frases completas para no confundir palabras normales)
+    clean_text = (user_text or "").lower().strip()
+    tech_phrases = [
+        "como arreglar", "cómo arreglar", "no carga la página", "no carga la pagina",
+        "página desordenada", "pagina desordenada", "pantalla desordenada", "letras gigantes",
+        "logo fo", "error al entrar", "error de carga", "no me deja registrar", "pantalla en negro"
+    ]
+    has_explicit_tech = any(p in clean_text for p in tech_phrases)
 
     vision_models = [
-        "qwen/qwen3.8-27b",
-        "meta-llama/llama-4-scout-17b-16e-instruct",
-        "llama-3.2-11b-vision-preview"
+        "llama-3.2-11b-vision-preview",
+        "llama-3.2-90b-vision-preview"
     ]
 
     prompt = (
-        "Eres un analista de soporte técnico y verificación bancaria para la plataforma de inversión Fortex en Colombia.\n"
+        "Eres un analista experto de atención al cliente para la plataforma de inversiones Fortex en Colombia.\n"
         "Examina detenidamente la imagen adjunta y determina con precisión su contenido.\n\n"
         "CRITERIOS DE CLASIFICACIÓN:\n"
-        "1. 'is_receipt' DEBE SER TRUE ÚNICAMENTE SI:\n"
-        "   - La imagen muestra una confirmación o recibo claro de pago o transferencia de dinero exitosa (Nequi, Bancolombia, Daviplata, PSE, Transfiya) con valor, fecha o referencia.\n"
-        "2. 'is_technical_issue' DEBE SER TRUE SI:\n"
-        "   - Es una captura de celular o pantalla mostrando la plataforma web de Fortex, un problema de visualización (logo expandido, letras grandes 'FO', textos desalineados), un error de carga, pantalla de registro o duda del sistema.\n"
-        "3. 'reason': Describe breve y claramente en español lo que se observa (ej: 'captura de celular con la web de Fortex y el logo grande FO', 'comprobante de transferencia Nequi por $30.000', 'foto personal o meme').\n\n"
+        "1. 'is_receipt': TRUE si la imagen es un COMPROBANTE DE TRANSFERENCIA BANCARIA O PAGO exitoso (Nequi, Bancolombia, Daviplata, Dale, Transfiya) con dinero transferido, fecha o comprobante.\n"
+        "2. 'is_id_card': TRUE si la imagen muestra una CÉDULA DE CIUDADANÍA, documento de identidad, tarjeta de identidad, pasaporte o licencia (con nombres, números de documento, código de barras o franja de seguridad).\n"
+        "3. 'is_technical_issue': TRUE ÚNICAMENTE si es una captura de pantalla de un celular mostrando la página web de Fortex con un problema técnico visible (pantalla rota, letras desbordadas 'FO', estilos desordenados o error de carga).\n"
+        "4. 'is_casual': TRUE si es una foto personal, un meme, un sticker, selfie, o cualquier otra imagen.\n"
+        "5. 'reason': Describe breve y claramente en español lo que se observa (ej: 'cédula de ciudadanía colombiana', 'comprobante de Nequi por $20.000', 'captura de pantalla con logo grande FO en la web', 'selfie o foto personal').\n\n"
         "Responde ÚNICAMENTE un JSON válido con esta estructura exacta:\n"
         "{\n"
         '  "is_receipt": true o false,\n'
-        '  "bank": "Nequi" | "Bancolombia" | "Daviplata" | "Otro" | "Ninguno",\n'
-        '  "amount": valor numérico en COP (por ejemplo 30000) o 0,\n'
-        '  "reference": "número de referencia si existe, o vacío",\n'
+        '  "is_id_card": true o false,\n'
         '  "is_technical_issue": true o false,\n'
+        '  "bank": "Nequi" | "Bancolombia" | "Daviplata" | "Otro" | "Ninguno",\n'
+        '  "amount": valor numérico en COP o 0,\n'
+        '  "reference": "número de comprobante si existe, o vacío",\n'
         '  "reason": "descripción de lo que se ve en la imagen"\n'
         "}"
     )
 
-    for vmodel in vision_models:
-        try:
-            r = requests.post(
-                GROQ_URL,
-                headers={
-                    "Authorization": f"Bearer {GROQ_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": vmodel,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": prompt},
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": f"data:image/jpeg;base64,{image_b64}"
+    if GROQ_API_KEY:
+        for vmodel in vision_models:
+            try:
+                r = requests.post(
+                    GROQ_URL,
+                    headers={
+                        "Authorization": f"Bearer {GROQ_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": vmodel,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": prompt},
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:image/jpeg;base64,{image_b64}"
+                                        }
                                     }
-                                }
-                            ]
-                        }
-                    ],
-                    "temperature": 0.1,
-                    "max_tokens": 300,
-                    "response_format": {"type": "json_object"}
-                },
-                timeout=18,
-            )
-            if r.status_code == 200:
-                data = r.json()
-                raw_content = data["choices"][0]["message"]["content"].strip()
-                clean_json = raw_content
-                if "```" in clean_json:
-                    match = re.search(r"\{.*\}", clean_json, re.DOTALL)
-                    if match:
-                        clean_json = match.group(0)
-                parsed = json.loads(clean_json)
-                log.info("Análisis de comprobante con %s: %s", vmodel, parsed)
-                return {
-                    "is_receipt": bool(parsed.get("is_receipt", False)),
-                    "bank": str(parsed.get("bank", "Bancolombia / Nequi")),
-                    "amount": float(parsed.get("amount", 0) or 0),
-                    "reference": str(parsed.get("reference", "")),
-                    "is_technical_issue": bool(parsed.get("is_technical_issue", False)) or has_tech_kw,
-                    "reason": str(parsed.get("reason", "")),
-                    "fallback": False
-                }
-            else:
-                log.warning("Groq Vision (%s) status %s: %s", vmodel, r.status_code, r.text)
-        except Exception as e:
-            log.warning("Error llamando a Groq Vision (%s): %s", vmodel, e)
+                                ]
+                            }
+                        ],
+                        "temperature": 0.1,
+                        "max_tokens": 300,
+                        "response_format": {"type": "json_object"}
+                    },
+                    timeout=18,
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    raw_content = data["choices"][0]["message"]["content"].strip()
+                    clean_json = raw_content
+                    if "```" in clean_json:
+                        match = re.search(r"\{.*\}", clean_json, re.DOTALL)
+                        if match:
+                            clean_json = match.group(0)
+                    parsed = json.loads(clean_json)
+                    log.info("Clasificación de imagen con %s: %s", vmodel, parsed)
+                    return {
+                        "is_receipt": bool(parsed.get("is_receipt", False)),
+                        "is_id_card": bool(parsed.get("is_id_card", False)),
+                        "is_technical_issue": bool(parsed.get("is_technical_issue", False)) and not bool(parsed.get("is_id_card", False)),
+                        "bank": str(parsed.get("bank", "Bancolombia / Nequi")),
+                        "amount": float(parsed.get("amount", 0) or 0),
+                        "reference": str(parsed.get("reference", "")),
+                        "reason": str(parsed.get("reason", "")),
+                        "fallback": False
+                    }
+                else:
+                    log.warning("Groq Vision (%s) status %s: %s", vmodel, r.status_code, r.text)
+            except Exception as e:
+                log.warning("Error llamando a Groq Vision (%s): %s", vmodel, e)
 
-    keywords = ["comprobante", "pago", "recarga", "transferencia", "consignacion", "consignación", "nequi", "bancolombia", "consigne", "pague", "transfiri"]
-    has_kw = any(kw in (user_text or "").lower() for kw in keywords)
+    # Fallback si falla la visión en la nube: NUNCA asumir que es un error técnico a menos que el usuario lo escriba explícitamente
+    keywords = ["comprobante", "pago", "recarga", "transferencia", "consignacion", "consignación", "nequi", "bancolombia"]
+    has_kw = any(kw in clean_text for kw in keywords)
     return {
         "is_receipt": False,
+        "is_id_card": False,
         "bank": "Desconocido",
         "amount": 0,
-        "is_technical_issue": has_tech_kw,
-        "reason": "Captura de pantalla de la plataforma Fortex con duda o inconveniente técnico" if has_tech_kw else "Captura o imagen adjunta",
+        "is_technical_issue": has_explicit_tech,
+        "reason": "Captura con duda técnica de la web" if has_explicit_tech else "Imagen adjunta enviada por el cliente",
         "fallback": True,
         "had_keywords": has_kw
     }
@@ -968,7 +966,7 @@ def webhook():
         return jsonify(status="ignored", reason="empty"), 200
 
     if has_media and not body:
-        body = "Hola, te acabo de enviar esta imagen / foto para que la revises."
+        body = ""
 
     # 1. Si un humano tomó el control de este chat, el bot respeta y SE QUEDA EN SILENCIO
     if chat_id in human_handled_chats:
@@ -1049,6 +1047,19 @@ def webhook():
             is_receipt = classification.get("is_receipt", False)
             reason_detail = classification.get("reason", "").strip()
             is_tech = classification.get("is_technical_issue", False)
+
+            is_id_doc = classification.get("is_id_card", False) or any(w in reason_detail.lower() for w in ["cédula", "cedula", "documento de identidad", "tarjeta de identidad", "pasaporte"])
+
+            # 3.1. Si el cliente envió una CÉDULA o DOCUMENTO DE IDENTIDAD
+            if is_id_doc:
+                id_reply = (
+                    f"¡Hola {client_push_name or ''}! 👋 He recibido la foto de tu documento de identidad (cédula). 🪪\n\n"
+                    "Te informo que en *Fortex* no es necesario subir tu cédula para registrarte ni para activar tus paquetes de inversión (solo requieres tu correo y crear tu clave en https://fortex.wasmer.app).\n\n"
+                    "¿Me la enviaste para validar algún dato en tu cuenta o en qué te puedo colaborar el día de hoy? Con todo el gusto te ayudo. 😊"
+                )
+                waha_send_text(chat_id, id_reply)
+                print(f"🤖 [{clean_chat}] SOFÍA (Cédula de identidad atendida): {id_reply}\n", flush=True)
+                return jsonify(status="ok", reason="id-card-received"), 200
 
             if is_receipt:
                 if is_group:
