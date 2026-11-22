@@ -18,7 +18,7 @@ if sys.stderr is None:
 # ===========================
 # 1. CONFIGURACIÓN
 # ===========================
-WAHA_URL = "http://127.0.0.1:3000"
+WAHA_URL = os.getenv("WAHA_URL", os.getenv("WAHA_BASE_URL", "http://127.0.0.1:3001"))
 WAHA_API_KEY = "34ec073c9c6e45738171e5fbd14a7498"
 WAHA_SESSION = "default"
 
@@ -1357,4 +1357,5 @@ def webhook():
 # 7. EJECUCIÓN
 # ===========================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5005, debug=False)
+    port = int(os.getenv("PORT", 3000))
+    app.run(host="0.0.0.0", port=port, debug=False)

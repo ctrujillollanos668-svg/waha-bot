@@ -20,9 +20,10 @@ COPY start.sh /app/start.sh
 RUN chmod +x /app/start.sh
 
 # Configuración de variables
-ENV WHATSAPP_HOOK_URL=http://localhost:5005/webhook
+ENV WHATSAPP_HOOK_URL=http://localhost:3000/webhook
 ENV WHATSAPP_HOOK_EVENTS=message,message.any,group.v2.participants,group.v2.join,group.join
-ENV WAHA_BASE_URL=http://localhost:3000
+ENV WAHA_BASE_URL=http://localhost:3001
+ENV WAHA_URL=http://localhost:3001
 ENV WAHA_API_KEY=34ec073c9c6e45738171e5fbd14a7498
 ENV WAHA_DASHBOARD_ENABLED=True
 ENV WAHA_DASHBOARD_USERNAME=admin
@@ -32,10 +33,10 @@ ENV WHATSAPP_START_SESSION=default
 ENV WHATSAPP_RESTART_ALL_SESSIONS=True
 ENV GROQ_MODEL=openai/gpt-oss-120b
 ENV WHATSAPP_API_HOSTNAME=127.0.0.1
-ENV WHATSAPP_API_PORT=3000
+ENV WHATSAPP_API_PORT=3001
 ENV WAHA_DASHBOARD_ENABLED=False
-ENV PORT=5005
+ENV PORT=3000
 
-EXPOSE 5005
+EXPOSE 3000
 
 CMD ["/app/start.sh"]
