@@ -21,7 +21,7 @@ RUN chmod +x /app/start.sh
 
 # Configuración de variables
 ENV WHATSAPP_HOOK_URL=http://localhost:5005/webhook
-ENV WHATSAPP_HOOK_EVENTS=message,message.any
+ENV WHATSAPP_HOOK_EVENTS=message,message.any,group.v2.participants,group.v2.join,group.join
 ENV WAHA_BASE_URL=http://localhost:3000
 ENV WAHA_API_KEY=34ec073c9c6e45738171e5fbd14a7498
 ENV WAHA_DASHBOARD_ENABLED=True

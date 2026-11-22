@@ -313,6 +313,72 @@ def waha_typing(chat_id: str, on: bool):
     pass
 
 # ===========================
+# 3.1 BIENVENIDA AUTOMÁTICA EN GRUPOS DE WHATSAPP
+# ===========================
+group_welcomed_users: dict[str, float] = {}
+
+def send_group_welcome(group_id: str, new_user_phone: str = "", push_name: str = ""):
+    """Envía la secuencia oficial de bienvenida (3 mensajes) a un nuevo integrante del grupo"""
+    if not group_id:
+        return
+
+    user_key = f"{group_id}_{new_user_phone or 'anon'}"
+    last_welcome = group_welcomed_users.get(user_key, 0)
+    # Evitar duplicar bienvenida si llegan múltiples eventos en menos de 5 minutos
+    if time.time() - last_welcome < 300:
+        log.info("Bienvenida duplicada omitida para %s en %s", new_user_phone, group_id)
+        return
+    group_welcomed_users[user_key] = time.time()
+
+    saludo_persona = f" @{new_user_phone}" if new_user_phone and len(new_user_phone) >= 10 else (f" *{push_name}*" if push_name else "")
+
+    msg1 = (
+        f"👋 ¡Bienvenido/a{saludo_persona} a la comunidad oficial de FORTEX! 🚀\n\n"
+        "Nos alegra mucho tenerte en nuestro equipo. Aquí generamos rendimientos diarios garantizados en Pesos Colombianos ($ COP) con tecnología de servidores en la nube."
+    )
+
+    msg2 = (
+        "🎁 *¡BENEFICIOS EXCLUSIVOS PARA NUEVOS INTEGRANTES!* 🎰🧧\n\n"
+        "Al registrarte por primera vez en la plataforma recibes regalos inmediatos:\n\n"
+        "• 🎰 *1 Giro GRATIS en la Ruleta VIP:* ¡Gira y gana premios en saldo en efectivo directo a tu cuenta!\n"
+        "• 🧧 *Sobre Rojo de Bienvenida:* Abre tu sobre con bono en saldo $ COP listo para reclamar.\n"
+        "• ⚡ *Acceso al Paquete de Entrada:* Puedes activar tu primer plan desde solo *$10.000 COP* y comenzar a recibir ganancias hoy mismo."
+    )
+
+    msg3 = (
+        "📊 *PLANES DE INVERSIÓN OFICIALES (COP):*\n\n"
+        "⭐ *NIVEL 1 (Económicos de Entrada)*\n"
+        "• *Básico:* $10.000 COP ➔ Ganas *$800 COP/día* (Tope: $36.000)\n"
+        "• *Plus:* $15.000 COP ➔ Ganas *$1.350 COP/día* (Tope: $60.750)\n"
+        "• *Pro:* $20.000 COP ➔ Ganas *$2.000 COP/día* (Tope: $90.000)\n\n"
+        "🔥 *NIVEL 2 (Intermedios Populares)*\n"
+        "• *Smart:* $30.000 COP ➔ Ganas *$2.670 COP/día* (Tope: $82.770)\n"
+        "• *Máster:* $40.000 COP ➔ Ganas *$3.120 COP/día* (Tope: $96.720)\n"
+        "• *Ultra:* $50.000 COP ➔ Ganas *$4.000 COP/día* (Tope: $124.000)\n\n"
+        "💎 *NIVEL 3 (VIP Élite)*\n"
+        "• *Ejecutivo:* $80.000 COP ➔ Ganas *$5.840 COP/día*\n"
+        "• *VIP Oro:* $130.000 COP ➔ Ganas *$8.060 COP/día*\n"
+        "• *Diamante:* $200.000 COP ➔ Ganas *$24.000 COP/día*\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "⚡ *PASOS PARA INICIAR:*\n"
+        "1️⃣ Crea tu cuenta gratis en la web: https://fortex.wasmer.app\n"
+        "2️⃣ Gira tu Ruleta y abre tu Sobre Rojo de regalo.\n"
+        "3️⃣ Recarga tu saldo por Nequi o Bancolombia (desde $10.000 COP) y activa tu paquete.\n"
+        "4️⃣ Retira tus ganancias acumuladas a tu cuenta bancaria desde $15.000 COP.\n\n"
+        "💬 _¿Tienes dudas o necesitas ayuda para recargar y activar? Escríbeme por mensaje privado con gusto para asesorarte paso a paso. ¡A ganar en equipo!_ 📈"
+    )
+
+    try:
+        waha_send_text(group_id, msg1)
+        time.sleep(1.2)
+        waha_send_text(group_id, msg2)
+        time.sleep(1.5)
+        waha_send_text(group_id, msg3)
+        print(f"🎉 [BIENVENIDA GRUPO] Secuencia completa enviada a {group_id} para {new_user_phone or push_name}", flush=True)
+    except Exception as e:
+        log.error("Error enviando bienvenida de grupo: %s", e)
+
+# ===========================
 # 4. FUNCIONES OLLAMA
 # ===========================
 def get_image_base64(payload: dict) -> str | None:
@@ -831,6 +897,19 @@ def webhook():
     event = data.get("event", "")
     payload = data.get("payload", {})
 
+    # ============================================================
+    # EVENTO DE BIENVENIDA EN GRUPOS DE WHATSAPP
+    # ============================================================
+    if event in ("group.v2.participants", "group.join"):
+        grp_id = (payload.get("group") or {}).get("id") or payload.get("groupId") or payload.get("chatId") or ""
+        p_type = payload.get("type") or ""
+        if event == "group.join" or p_type in ("join", "add", ""):
+            participant = payload.get("participant") or {}
+            user_jid = participant.get("id") if isinstance(participant, dict) else str(participant)
+            clean_phone = "".join(filter(str.isdigit, str(user_jid).split("@")[0]))
+            send_group_welcome(grp_id, new_user_phone=clean_phone)
+            return jsonify(status="ok", reason="group-participant-join-welcomed"), 200
+
     # Permitir eventos de mensajes
     if event not in ("message", "message.any"):
         return jsonify(status="ignored", reason="not-message-event"), 200
@@ -838,6 +917,15 @@ def webhook():
     from_me = payload.get("fromMe")
     body = (payload.get("body") or "").strip()
     chat_id = payload.get("from", "")
+
+    # Detectar notificación del sistema cuando un nuevo integrante entra al grupo
+    msg_type = str(payload.get("type") or "")
+    subtype = str(payload.get("subtype") or ((payload.get("_data") or {}).get("subtype")) or "")
+    if "@g.us" in chat_id and (subtype in ("add", "invite", "join") or msg_type in ("gp2", "notification_template", "group_notification")):
+        author_jid = payload.get("author") or payload.get("participant") or ""
+        clean_author = "".join(filter(str.isdigit, str(author_jid).split("@")[0]))
+        send_group_welcome(chat_id, new_user_phone=clean_author, push_name=payload.get("pushName", ""))
+        return jsonify(status="ok", reason="group-system-join-welcomed"), 200
 
     # ============================================================
     # DETECCIÓN DE INTERVENCIÓN HUMANA (CUANDO EL ASESOR RESPONDE)
