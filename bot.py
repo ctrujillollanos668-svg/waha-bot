@@ -387,7 +387,7 @@ def classify_receipt_image(image_b64: str, user_text: str = "") -> dict:
     de pago/transferencia bancaria real (Nequi, Bancolombia, etc.) o si es una
     captura de pantalla de un inconveniente técnico en la plataforma web, error, consulta, etc.
     """
-    tech_keywords = ["como", "cómo", "arreglar", "sale", "así", "asi", "no carga", "error", "pantalla", "logo", "letra", "fo", "página", "pagina", "registrar", "registro", "desordenada", "ayuda", "miren"]
+    tech_keywords = ["como", "cómo", "arreglar", "sale", "así", "asi", "no carga", "error", "pantalla", "logo", "letra", "letras", "fo", "página", "pagina", "registrar", "registro", "desordenada", "ayuda", "miren", "mira", "mire", "feo", "dañado", "roto", "ver", "veo", "por que", "porque", "que paso", "qué pasó", "arregla", "problema", "iniciar", "entrar", "dañada"]
     has_tech_kw = any(kw in (user_text or "").lower() for kw in tech_keywords)
 
     if not GROQ_API_KEY:
@@ -510,9 +510,9 @@ def ollama_chat(messages: list[dict], image_b64: str | None = None) -> str:
         last_msg = req_messages[-1]
         orig_content = last_msg.get("content", "").strip()
         if not orig_content:
-            last_msg["content"] = "[El cliente ha enviado una imagen / comprobante de pago]"
+            last_msg["content"] = "[El cliente ha enviado una imagen o captura de pantalla]"
         else:
-            last_msg["content"] = f"[El cliente adjuntó imagen / comprobante]: {orig_content}"
+            last_msg["content"] = f"[El cliente adjuntó una foto / captura]: {orig_content}"
 
     # 1. Intentar con Groq Cloud (Respuesta en menos de 1 segundo)
     if GROQ_API_KEY:
@@ -730,6 +730,19 @@ def debug():
     import subprocess
     import socket
     info = {"waha_url": WAHA_URL, "session": WAHA_SESSION}
+
+    try:
+        info["git_commit"] = subprocess.getoutput("git log -1 --oneline")
+    except Exception as e:
+        info["git_commit"] = str(e)
+
+    try:
+        log_path = os.path.join(os.path.dirname(__file__), "bot.log")
+        if os.path.exists(log_path):
+            with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+                info["bot_log"] = f.read()[-3000:]
+    except Exception as e:
+        info["bot_log_err"] = str(e)
 
     try:
         if os.path.exists("/tmp/waha.log"):
@@ -1099,8 +1112,7 @@ def webhook():
                 else:
                     context_hint = (
                         "[CONTEXTO VISUAL: El cliente adjuntó una imagen o captura de pantalla. "
-                        "Como Sofía de Fortex, atiéndelo cordialmente y pregúntale amablemente en qué le puedes colaborar respecto a lo que ve en su pantalla, "
-                        "o si se trata de una recarga, recuérdale con calidez que para validarla se requiere la captura clara de su transferencia exitosa de Nequi o Bancolombia]."
+                        "Como Sofía de Fortex, atiéndelo cordialmente, con empatía y sentido común, y ayúdale a resolver su duda o pregúntale amablemente en qué le puedes colaborar con la plataforma. NUNCA menciones comprobantes de pago ni recargas a menos que el cliente lo haya solicitado expresamente]."
                     )
 
                 if user_sent_real_text:
