@@ -1,5 +1,8 @@
 import sys
 import os
+import json
+import re
+import base64
 import requests
 import logging
 import time
@@ -308,6 +311,113 @@ def get_image_base64(payload: dict) -> str | None:
         except Exception as e:
             log.warning("No se pudo descargar la imagen de WAHA: %s", e)
     return None
+
+def classify_receipt_image(image_b64: str, user_text: str = "") -> dict:
+    """
+    Usa el modelo de visión multimodal de Groq (Llama 3.2 Vision) para determinar
+    si la imagen es un comprobante de pago/transferencia bancaria real (Nequi, Bancolombia, etc.)
+    o si es una foto no relacionada (meme, selfie, foto personal, captura de error, etc.).
+    """
+    if not GROQ_API_KEY:
+        log.warning("GROQ_API_KEY no configurado para visión.")
+        keywords = ["comprobante", "pago", "recarga", "transferencia", "consignacion", "consignación", "nequi", "bancolombia", "consigne", "pague", "transfiri"]
+        has_kw = any(kw in (user_text or "").lower() for kw in keywords)
+        return {
+            "is_receipt": False,
+            "bank": "Desconocido",
+            "amount": 0,
+            "reason": "IA de visión no disponible",
+            "fallback": True,
+            "had_keywords": has_kw
+        }
+
+    vision_models = ["llama-3.2-11b-vision-preview", "llama-3.2-90b-vision-preview"]
+
+    prompt = (
+        "Eres un analista experto en auditoría y verificación de transferencias bancarias de Colombia para la empresa Fortex.\n"
+        "Examina detenidamente la imagen adjunta y determina con precisión si se trata de un COMPROBANTE DE PAGO O TRANSFERENCIA BANCARIA REAL (por ejemplo: captura de pantalla de transferencia exitosa en Nequi, Bancolombia, Daviplata, PSE, Transfiya, Dale, o recibo físico bancario/corresponsal).\n\n"
+        "CRITERIOS ESTRICTOS:\n"
+        "1. 'is_receipt' DEBE SER TRUE ÚNICAMENTE SI:\n"
+        "   - La imagen muestra una confirmación o recibo claro de pago o transferencia de dinero exitosa.\n"
+        "   - Contiene datos visibles como valor/monto, fecha, referencia o número de aprobación bancaria.\n"
+        "2. 'is_receipt' DEBE SER FALSE SI:\n"
+        "   - Es una foto personal, selfie, foto de personas, animales, comida o paisajes.\n"
+        "   - Es un meme, imagen cómica, sticker o captura de redes sociales (Instagram, TikTok, WhatsApp general, Facebook).\n"
+        "   - Es una captura de pantalla de un error de software, código de programación o página web que no sea un recibo de transferencia bancaria.\n"
+        "   - Es una foto borrosa, en blanco o ilegible.\n\n"
+        "Responde ÚNICAMENTE un JSON válido con la siguiente estructura exacta:\n"
+        "{\n"
+        '  "is_receipt": true o false,\n'
+        '  "bank": "Nequi" | "Bancolombia" | "Daviplata" | "Otro" | "Ninguno",\n'
+        '  "amount": valor numérico en COP (por ejemplo 25000) o 0 si no se distingue o si no es comprobante,\n'
+        '  "reference": "número de referencia/aprobación si existe, o vacío",\n'
+        '  "reason": "descripción muy breve en español de lo que realmente se ve en la imagen (ej: \'captura de transferencia Nequi por $50.000\', \'foto personal tipo selfie\', \'meme de internet\', \'captura de error en página web\')"\n'
+        "}"
+    )
+
+    for vmodel in vision_models:
+        try:
+            r = requests.post(
+                GROQ_URL,
+                headers={
+                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": vmodel,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{image_b64}"
+                                    }
+                                }
+                            ]
+                        }
+                    ],
+                    "temperature": 0.1,
+                    "max_tokens": 300,
+                    "response_format": {"type": "json_object"}
+                },
+                timeout=18,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                raw_content = data["choices"][0]["message"]["content"].strip()
+                clean_json = raw_content
+                if "```" in clean_json:
+                    match = re.search(r"\{.*\}", clean_json, re.DOTALL)
+                    if match:
+                        clean_json = match.group(0)
+                parsed = json.loads(clean_json)
+                log.info("Análisis de comprobante con %s: %s", vmodel, parsed)
+                return {
+                    "is_receipt": bool(parsed.get("is_receipt", False)),
+                    "bank": str(parsed.get("bank", "Bancolombia / Nequi")),
+                    "amount": float(parsed.get("amount", 0) or 0),
+                    "reference": str(parsed.get("reference", "")),
+                    "reason": str(parsed.get("reason", "")),
+                    "fallback": False
+                }
+            else:
+                log.warning("Groq Vision (%s) status %s: %s", vmodel, r.status_code, r.text)
+        except Exception as e:
+            log.warning("Error llamando a Groq Vision (%s): %s", vmodel, e)
+
+    keywords = ["comprobante", "pago", "recarga", "transferencia", "consignacion", "consignación", "nequi", "bancolombia", "consigne", "pague", "transfiri"]
+    has_kw = any(kw in (user_text or "").lower() for kw in keywords)
+    return {
+        "is_receipt": False,
+        "bank": "Desconocido",
+        "amount": 0,
+        "reason": "No se pudo verificar la imagen automáticamente",
+        "fallback": True,
+        "had_keywords": has_kw
+    }
 
 def ollama_chat(messages: list[dict], image_b64: str | None = None) -> str:
     """Generar respuesta con Groq Cloud (con respaldo en Ollama si falla)"""
@@ -774,45 +884,80 @@ def webhook():
     clean_chat = real_phone
     print(f"\n📩 [{clean_chat}] CLIENTE ({client_push_name}): {body}", flush=True)
 
-    # 3. Descargar imagen si existe y procesar comprobante de pago automático
+    # 3. Descargar imagen si existe y procesar comprobante de pago con validación inteligente de visión
     image_b64 = None
     if has_media:
         image_b64 = get_image_base64(payload)
         if image_b64:
-            print(f"📸 [{clean_chat}] Imagen recibida. Registrando comprobante en Fortex...", flush=True)
-            try:
-                rep_res = requests.post(
-                    "https://fortex.wasmer.app/api/bot/report-deposit",
-                    json={
-                        "client_phone": clean_chat,
-                        "image_b64": image_b64,
-                    },
-                    timeout=20,
-                )
-                if rep_res.status_code == 200:
-                    rep_data = rep_res.json()
-                    if rep_data.get("success"):
-                        user_name = rep_data.get("user_name", "")
-                        greeting = f" ¡Hola {user_name}!" if user_name else ""
-                        reply = (
-                            f"¡Comprobante de pago recibido con éxito!{greeting} 📸✅\n\n"
-                            "Ya fue enviado directamente a nuestro equipo administrativo para su verificación en el banco. "
-                            "En breves minutos te confirmaremos por este medio cuando tu saldo y tus giros de ruleta queden acreditados en tu cuenta de Fortex. ¡Muchas gracias por tu recarga! 😊"
-                        )
-                        waha_send_text(chat_id, reply)
-                        print(f"🤖 [{clean_chat}] SOFÍA (Comprobante registrado en Telegram): {reply}\n", flush=True)
-                        return jsonify(status="ok", reason="deposit-reported"), 200
-                    elif rep_data.get("user_found") is False:
-                        reply = (
-                            "¡He recibido tu comprobante de pago! 📸\n\n"
-                            "Sin embargo, tu número de WhatsApp no coincide con ninguna cuenta registrada en Fortex. "
-                            "¿Me indicas por favor con qué correo electrónico te registraste en https://fortex.wasmer.app para poder acreditar tu saldo correctamente? 😊"
-                        )
-                        waha_send_text(chat_id, reply)
-                        print(f"🤖 [{clean_chat}] SOFÍA (Usuario no encontrado): {reply}\n", flush=True)
-                        return jsonify(status="ok", reason="user-not-found"), 200
-            except Exception as e:
-                log.warning("Error reportando comprobante a Fortex: %s", e)
+            print(f"📸 [{clean_chat}] Imagen recibida. Analizando si es un comprobante de pago real...", flush=True)
+            classification = classify_receipt_image(image_b64, user_text=body)
+            print(f"🔍 [{clean_chat}] Resultado visión: {classification}", flush=True)
+
+            if classification.get("is_receipt"):
+                suggested_amount = classification.get("amount", 0)
+                detected_bank = classification.get("bank", "Bancolombia / Nequi")
+                try:
+                    rep_res = requests.post(
+                        "https://fortex.wasmer.app/api/bot/report-deposit",
+                        json={
+                            "client_phone": clean_chat,
+                            "image_b64": image_b64,
+                            "suggested_amount": suggested_amount,
+                            "client_name": client_push_name,
+                        },
+                        timeout=20,
+                    )
+                    if rep_res.status_code == 200:
+                        rep_data = rep_res.json()
+                        if rep_data.get("success"):
+                            user_name = rep_data.get("user_name", "")
+                            greeting = f" ¡Hola {user_name}!" if user_name else ""
+                            amount_text = f" por valor de *${suggested_amount:,.0f} COP*".replace(",", ".") if suggested_amount > 0 else ""
+                            reply = (
+                                f"¡Comprobante de pago verificado con éxito!{greeting} 📸✅\n\n"
+                                f"Hemos detectado tu transferencia de *{detected_bank}*{amount_text}.\n"
+                                "Ya fue enviada directamente a nuestro equipo administrativo para su verificación en el banco. "
+                                "En breves minutos te confirmaremos por este medio cuando tu saldo y tus giros de ruleta queden acreditados en tu cuenta de Fortex. ¡Muchas gracias por tu recarga! 😊"
+                            )
+                            waha_send_text(chat_id, reply)
+                            print(f"🤖 [{clean_chat}] SOFÍA (Comprobante VÁLIDO registrado en Telegram): {reply}\n", flush=True)
+                            return jsonify(status="ok", reason="deposit-reported"), 200
+                        elif rep_data.get("user_found") is False:
+                            reply = (
+                                "¡He recibido tu comprobante de pago! 📸\n\n"
+                                "Sin embargo, tu número de WhatsApp no coincide con ninguna cuenta registrada en Fortex. "
+                                "¿Me indicas por favor con qué correo electrónico te registraste en https://fortex.wasmer.app para poder acreditar tu saldo correctamente? 😊"
+                            )
+                            waha_send_text(chat_id, reply)
+                            print(f"🤖 [{clean_chat}] SOFÍA (Usuario no encontrado): {reply}\n", flush=True)
+                            return jsonify(status="ok", reason="user-not-found"), 200
+                except Exception as e:
+                    log.warning("Error reportando comprobante a Fortex: %s", e)
+            else:
+                # La imagen NO es un comprobante de pago válido
+                reason_detail = classification.get("reason", "")
+
+                # Si el usuario escribió un texto propio junto con la foto
+                user_sent_real_text = bool(body and body != "Hola, te acabo de enviar esta imagen / foto para que la revises.")
+
+                if user_sent_real_text:
+                    log.info("Imagen no-comprobante con texto del usuario: '%s'", body)
+                    # Enriquecemos el mensaje para que el modelo IA responda a su consulta
+                    body = f"{body}\n\n[Aviso interno: El cliente adjuntó una imagen, pero el sistema verificó que NO es un comprobante de pago bancario ({reason_detail}). Responde amablemente a su consulta y recuérdale que para recargas en Fortex se requiere la foto del comprobante de transferencia exitosa de Nequi o Bancolombia]."
+                else:
+                    # Envió solo una foto aleatoria (selfie, meme, captura de error, etc.)
+                    reply = (
+                        "¡Hola! He recibido tu imagen 📸, pero nuestro sistema no la reconoce como un comprobante de transferencia bancaria de Nequi o Bancolombia.\n\n"
+                    )
+                    if reason_detail:
+                        reply += f"*(Identificado: {reason_detail})*\n\n"
+                    reply += (
+                        "Recuerda que para realizar una recarga y activar tus planes VIP en Fortex, debes enviarme la captura de pantalla clara de tu comprobante de transferencia exitosa.\n\n"
+                        "¿Deseas información para recargar o en qué otra consulta te puedo colaborar? 😊"
+                    )
+                    waha_send_text(chat_id, reply)
+                    print(f"🤖 [{clean_chat}] SOFÍA (Foto no-comprobante rechazada): {reply}\n", flush=True)
+                    return jsonify(status="ok", reason="non-receipt-rejected"), 200
 
     # Si el cliente responde con un correo para vincular un comprobante
     if "@" in body and "." in body and len(body.split()) == 1:
